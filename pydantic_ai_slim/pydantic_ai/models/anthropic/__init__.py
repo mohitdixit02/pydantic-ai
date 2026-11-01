@@ -2150,7 +2150,6 @@ class AnthropicModel(Model[AsyncAnthropicClient]):
         items: list[ModelResponsePart] = []
         builtin_tool_calls: dict[str, NativeToolCallPart] = {}
         fallbacks: list[dict[str, Any]] = []
-        pending_fallback: dict[str, Any] | None = None
         enabled_server_tool_names = self._get_enabled_server_tool_names(model_request_parameters, model_settings)
         server_tool_result_ids = {
             item.tool_use_id
@@ -2177,27 +2176,16 @@ class AnthropicModel(Model[AsyncAnthropicClient]):
         for item in response.content:
             if isinstance(item, BetaTextBlock):
                 if citations := map_citations(item.citations or [], item.text, fetched_pages):
-                    details = citations_provider_details(item.citations or [])
-                    if pending_fallback:
-                        details = details or {}
-                        details['fallback'] = pending_fallback
-                        pending_fallback = None
                     items.append(
                         TextPart(
                             content=item.text,
                             provider_name=self.system,
-                            provider_details=details,
+                            provider_details=citations_provider_details(item.citations or []),
                             citations=citations,
                         )
                     )
                 else:
-                    details = {'fallback': pending_fallback} if pending_fallback else None
-                    pending_fallback = None
-                    items.append(
-                        TextPart(
-                            content=item.text, provider_name=self.system if details else None, provider_details=details
-                        )
-                    )
+                    items.append(TextPart(content=item.text))
             elif isinstance(item, BetaServerToolUseBlock):
                 if item.name not in enabled_server_tool_names and item.id not in server_tool_result_ids:
                     continue
@@ -2240,9 +2228,7 @@ class AnthropicModel(Model[AsyncAnthropicClient]):
                     )
                 )
             elif isinstance(item, BetaFallbackBlock):
-                fallback_dict = item.model_dump(mode='json', by_alias=True)
-                fallbacks.append(fallback_dict)
-                pending_fallback = fallback_dict
+                fallbacks.append(item.model_dump(mode='json', by_alias=True))
             else:
                 assert isinstance(item, BetaToolUseBlock), f'unexpected item type {type(item)}'
                 items.append(
@@ -3019,12 +3005,12 @@ class AnthropicModel(Model[AsyncAnthropicClient]):
             is_error=part.outcome in ERROR_OUTCOMES,
         )
 
-    def _map_model_response(self, message: ModelResponse, map_context: _MapMessagesContext) -> None:
-        """Append a `ModelResponse`'s assistant turn to `map_context.anthropic_messages`."""
-        assistant_content_params: list[_AssistantContentBlockParam] = []
-        carried_thinking_params: list[BetaTextBlockParam] = []
-        for response_part in message.parts:
-            if response_part.provider_details and (fallback := response_part.provider_details.get('fallback')):
+    @staticmethod
+    def _prepend_fallback_blocks(
+        message: ModelResponse, assistant_content_params: list[_AssistantContentBlockParam]
+    ) -> None:
+        if message.provider_details and (fallbacks := message.provider_details.get('fallbacks')):
+            for fallback in fallbacks:
                 assistant_content_params.append(
                     BetaFallbackBlockParam(
                         type='fallback',
@@ -3033,6 +3019,13 @@ class AnthropicModel(Model[AsyncAnthropicClient]):
                         **({'from': fallback['from']} if 'from' in fallback else {}),
                     )
                 )
+
+    def _map_model_response(self, message: ModelResponse, map_context: _MapMessagesContext) -> None:
+        """Append a `ModelResponse`'s assistant turn to `map_context.anthropic_messages`."""
+        assistant_content_params: list[_AssistantContentBlockParam] = []
+        carried_thinking_params: list[BetaTextBlockParam] = []
+        self._prepend_fallback_blocks(message, assistant_content_params)
+        for response_part in message.parts:
             if isinstance(response_part, TextPart):
                 if response_part.content:
                     text_block = BetaTextBlockParam(text=response_part.content, type='text')
