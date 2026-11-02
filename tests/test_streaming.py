@@ -2670,6 +2670,52 @@ class TestStreamingCachedOutput:
         # Second output should be the original cached value (not mutated)
         assert output2 == Foo(a=42, b='FOO')
 
+    async def test_output_function_none_cached(self):
+        """Test that calling `get_output()` with a None output caches the result (#12178).
+
+        When the output is legitimately None, repeated calls to `get_output()` and
+        `stream_output()` should hit the cache instead of re-validating.
+        """
+        call_log: list[tuple[Any, bool]] = []
+
+        def find_user(ctx: RunContext, user_id: int) -> str | None:
+            call_log.append((user_id, ctx.partial_output))
+            return None
+
+        agent = Agent(TestModel(), output_type=find_user)
+
+        async with agent.run_stream('find user') as result:
+            output1 = await result.get_output()
+            output2 = await result.get_output()
+
+        assert output1 is None
+        assert output2 is None
+        assert call_log == [(0, False)]
+
+        call_log.clear()
+        async with agent.run_stream('find user') as result:
+            outputs1 = [x async for x in result.stream_output()]
+            outputs2 = [x async for x in result.stream_output()]
+
+        assert outputs1[-1] is None
+        assert outputs2 == [None]
+        assert call_log == [(0, True), (0, False)]
+
+    async def test_cancelled_stream_none_settled_output_raises(self):
+        """Cancelled stream with None output still raises UserError from _settled_output (#12178 Option A)."""
+
+        def find_user(ctx: RunContext, user_id: int) -> str | None:
+            return None
+
+        agent = Agent(TestModel(), output_type=find_user)
+        async with agent.run_stream('find user') as res:
+            await res.cancel()
+            with pytest.raises(
+                UserError,
+                match='The stream was cancelled before it produced an output',
+            ):
+                res.result()
+
 
 class OutputType(BaseModel):
     """Result type used by multiple tests."""
