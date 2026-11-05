@@ -30,6 +30,7 @@ from pydantic_ai import (
     ContentCitationAnchor,
     DocumentCitationSource,
     DocumentUrl,
+    FallbackPart,
     FinalResultEvent,
     ImageUrl,
     ModelAPIError,
@@ -184,8 +185,11 @@ with try_import() as imports_successful:
         BetaRawMessageStopEvent,
         BetaRawMessageStreamEvent,
         BetaServerToolUseBlock,
+        BetaSignatureDelta,
         BetaTextBlock,
         BetaTextDelta,
+        BetaThinkingBlock,
+        BetaThinkingDelta,
         BetaToolUseBlock,
         BetaUsage,
         BetaWebFetchBlock,
@@ -863,20 +867,179 @@ async def test_anthropic_server_side_fallback(allow_model_requests: None):
         [fallback_block, BetaTextBlock(text='world', type='text')],
         BetaUsage(input_tokens=5, output_tokens=10),
     )
-    mock_client = MockAnthropic.create_mock(c)
-    m = AnthropicModel('claude-haiku-4-5', provider=AnthropicProvider(anthropic_client=mock_client))
+    mock_client = cast(MockAnthropic, MockAnthropic.create_mock(c))
+    m = AnthropicModel('claude-haiku-4-5', provider=AnthropicProvider(anthropic_client=cast(Any, mock_client)))
     agent = Agent(m)
 
     result = await agent.run('hello')
     assert result.output == 'world'
-    assert result.response.provider_details is not None
-    assert 'fallbacks' in result.response.provider_details
-    assert result.response.provider_details['fallbacks'][0]['to']['model'] == 'claude-haiku-4-5'
+    assert [type(p) for p in result.response.parts] == [FallbackPart, TextPart]
+    fallback_part = result.response.parts[0]
+    assert isinstance(fallback_part, FallbackPart)
+    assert fallback_part.to == {'model': 'claude-haiku-4-5'}
+    assert fallback_part.from_ == {'model': 'claude-fable-5-1'}
+    assert fallback_part.trigger == {'type': 'refusal', 'category': 'cyber'}
 
     # reset index so mock responds again for round-trip check
-    mock_client.index = 0  # pyright: ignore[reportAttributeAccessIssue]
+    mock_client.index = 0
     result2 = await agent.run('hello again', message_history=result.all_messages())
     assert result2.output == 'world'
+    replayed_content = cast(list[dict[str, Any]], mock_client.chat_completion_kwargs[1]['messages'][1]['content'])
+    assert len(replayed_content) == 2
+    assert replayed_content[0]['type'] == 'fallback'
+    assert replayed_content[0]['to'] == {'model': 'claude-haiku-4-5'}
+    assert replayed_content[1]['type'] == 'text'
+
+
+async def test_anthropic_fallback_interleaved_thinking_ordering(allow_model_requests: None):
+    fallback_block = BetaFallbackBlock.model_validate(
+        {
+            'type': 'fallback',
+            'from': {'model': 'claude-fable-5-1'},
+            'to': {'model': 'claude-haiku-4-5'},
+            'trigger': {'type': 'refusal', 'category': 'cyber'},
+        }
+    )
+    c = completion_message(
+        [
+            BetaThinkingBlock(type='thinking', thinking='first thought', signature='sig1'),
+            fallback_block,
+            BetaThinkingBlock(type='thinking', thinking='second thought', signature='sig2'),
+            BetaTextBlock(text='final answer', type='text'),
+        ],
+        BetaUsage(input_tokens=10, output_tokens=30),
+    )
+    mock_client = cast(MockAnthropic, MockAnthropic.create_mock(c))
+    m = AnthropicModel('claude-haiku-4-5', provider=AnthropicProvider(anthropic_client=cast(Any, mock_client)))
+    agent = Agent(m)
+
+    result = await agent.run('start')
+    assert result.output == 'final answer'
+    assert [type(p) for p in result.response.parts] == [ThinkingPart, FallbackPart, ThinkingPart, TextPart]
+
+    mock_client.index = 0
+    result2 = await agent.run('next', message_history=result.all_messages())
+    assert result2.output == 'final answer'
+
+    replayed_content = cast(list[dict[str, Any]], mock_client.chat_completion_kwargs[1]['messages'][1]['content'])
+    assert [item['type'] for item in replayed_content] == ['thinking', 'fallback', 'thinking', 'text']
+    assert replayed_content[0] == {'type': 'thinking', 'thinking': 'first thought', 'signature': 'sig1'}
+    assert replayed_content[1] == {
+        'type': 'fallback',
+        'from': {'model': 'claude-fable-5-1'},
+        'to': {'model': 'claude-haiku-4-5'},
+        'trigger': {'type': 'refusal', 'category': 'cyber'},
+    }
+    assert replayed_content[2] == {'type': 'thinking', 'thinking': 'second thought', 'signature': 'sig2'}
+    assert replayed_content[3] == {'type': 'text', 'text': 'final answer'}
+
+
+async def test_anthropic_fallback_streamed_preservation(allow_model_requests: None):
+    fallback_block = BetaFallbackBlock.model_validate(
+        {
+            'type': 'fallback',
+            'from': {'model': 'claude-fable-5-1'},
+            'to': {'model': 'claude-haiku-4-5'},
+            'trigger': {'type': 'refusal', 'category': 'cyber'},
+        }
+    )
+    stream_events = [
+        BetaRawMessageStartEvent(
+            type='message_start',
+            message=BetaMessage(
+                id='msg-1',
+                model='claude-haiku-4-5',
+                role='assistant',
+                type='message',
+                content=[],
+                stop_reason=None,
+                usage=BetaUsage(input_tokens=10, output_tokens=0),
+            ),
+        ),
+        BetaRawContentBlockStartEvent(
+            type='content_block_start',
+            index=0,
+            content_block=BetaThinkingBlock(type='thinking', thinking='', signature=''),
+        ),
+        BetaRawContentBlockDeltaEvent(
+            type='content_block_delta',
+            index=0,
+            delta=BetaThinkingDelta(type='thinking_delta', thinking='first thought'),
+        ),
+        BetaRawContentBlockDeltaEvent(
+            type='content_block_delta',
+            index=0,
+            delta=BetaSignatureDelta(type='signature_delta', signature='sig1'),
+        ),
+        BetaRawContentBlockStopEvent(type='content_block_stop', index=0),
+        BetaRawContentBlockStartEvent(
+            type='content_block_start',
+            index=1,
+            content_block=fallback_block,
+        ),
+        BetaRawContentBlockStopEvent(type='content_block_stop', index=1),
+        BetaRawContentBlockStartEvent(
+            type='content_block_start',
+            index=2,
+            content_block=BetaThinkingBlock(type='thinking', thinking='', signature=''),
+        ),
+        BetaRawContentBlockDeltaEvent(
+            type='content_block_delta',
+            index=2,
+            delta=BetaThinkingDelta(type='thinking_delta', thinking='second thought'),
+        ),
+        BetaRawContentBlockDeltaEvent(
+            type='content_block_delta',
+            index=2,
+            delta=BetaSignatureDelta(type='signature_delta', signature='sig2'),
+        ),
+        BetaRawContentBlockStopEvent(type='content_block_stop', index=2),
+        BetaRawContentBlockStartEvent(
+            type='content_block_start',
+            index=3,
+            content_block=BetaTextBlock(type='text', text=''),
+        ),
+        BetaRawContentBlockDeltaEvent(
+            type='content_block_delta',
+            index=3,
+            delta=BetaTextDelta(type='text_delta', text='streamed text'),
+        ),
+        BetaRawContentBlockStopEvent(type='content_block_stop', index=3),
+        BetaRawMessageDeltaEvent(
+            type='message_delta',
+            delta=Delta(stop_reason='end_turn'),
+            usage=BetaMessageDeltaUsage(output_tokens=30),
+        ),
+        BetaRawMessageStopEvent(type='message_stop'),
+    ]
+
+    c2 = completion_message(
+        [BetaTextBlock(text='turn 2 reply', type='text')],
+        BetaUsage(input_tokens=15, output_tokens=10),
+    )
+    mock_client = MockAnthropic(stream=stream_events, messages_=c2)
+    m = AnthropicModel('claude-haiku-4-5', provider=AnthropicProvider(anthropic_client=cast(Any, mock_client)))
+    agent = Agent(m)
+
+    async with agent.run_stream('hello') as result:
+        output = await result.get_output()
+    assert output == 'streamed text'
+    assert [type(p) for p in result.response.parts] == [ThinkingPart, FallbackPart, ThinkingPart, TextPart]
+
+    result2 = await agent.run('follow up', message_history=result.all_messages())
+    assert result2.output == 'turn 2 reply'
+
+    replayed_content = cast(list[dict[str, Any]], mock_client.chat_completion_kwargs[1]['messages'][1]['content'])
+    assert [item['type'] for item in replayed_content] == ['thinking', 'fallback', 'thinking', 'text']
+    assert replayed_content[0] == {'type': 'thinking', 'thinking': 'first thought', 'signature': 'sig1'}
+    assert replayed_content[1] == {
+        'type': 'fallback',
+        'from': {'model': 'claude-fable-5-1'},
+        'to': {'model': 'claude-haiku-4-5'},
+        'trigger': {'type': 'refusal', 'category': 'cyber'},
+    }
+    assert replayed_content[2] == {'type': 'thinking', 'thinking': 'second thought', 'signature': 'sig2'}
+    assert replayed_content[3] == {'type': 'text', 'text': 'streamed text'}
 
 
 async def test_sync_request_text_response(allow_model_requests: None):

@@ -2,10 +2,11 @@
 
 from __future__ import annotations as _annotations
 
-from typing import Any, assert_never
+from typing import Any, assert_never, cast
 
 import pydantic_core
 from anthropic.types.beta import (
+    BetaFallbackBlock,
     BetaInputTransformation,
     BetaMessage,
     BetaMessageDeltaUsage,
@@ -15,10 +16,11 @@ from anthropic.types.beta import (
     BetaUsage,
 )
 from opentelemetry.trace import get_current_span
+from pydantic import BaseModel
 
 from ... import usage
 from ..._context_size import mark_context_input_tokens, marked_context_input_tokens
-from ...messages import FinishReason, ModelMessage, ModelResponse
+from ...messages import FallbackPart, FinishReason, ModelMessage, ModelResponse
 from .. import StreamedResponse
 
 FINISH_REASON_MAP: dict[BetaStopReason, FinishReason | None] = {
@@ -256,3 +258,26 @@ def compaction_provider_details(encrypted_content: str | None, signature: str | 
         if value is not None
     }
     return details or None
+
+
+def map_fallback_block(item: BetaFallbackBlock, provider_name: str | None) -> FallbackPart:
+    """Convert an Anthropic `BetaFallbackBlock` to a `FallbackPart`."""
+    from_info: dict[str, Any] | str | None = None
+    if getattr(item, 'from_', None) is not None:
+        from_info = item.from_.model_dump(mode='json', by_alias=True)
+    elif hasattr(item, 'from'):
+        from_val: object = getattr(item, 'from')
+        if isinstance(from_val, BaseModel):
+            from_info = from_val.model_dump(mode='json', by_alias=True)
+        elif isinstance(from_val, str):
+            from_info = from_val
+        elif isinstance(from_val, dict):
+            from_info = cast(dict[str, Any], from_val)
+    to_info: dict[str, Any] | str = item.to.model_dump(mode='json', by_alias=True)
+    trigger_info: dict[str, Any] | None = item.trigger.model_dump(mode='json', by_alias=True)
+    return FallbackPart(
+        to=to_info,
+        from_=from_info,
+        trigger=trigger_info,
+        provider_name=provider_name,
+    )

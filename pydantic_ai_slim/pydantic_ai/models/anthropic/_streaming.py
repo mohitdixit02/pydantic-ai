@@ -66,6 +66,7 @@ from ._response import (
     FINISH_REASON_MAP,
     compaction_provider_details,
     last_pass_input_tokens,
+    map_fallback_block,
     map_usage,
     report_input_transformations,
 )
@@ -257,7 +258,10 @@ class AnthropicStreamedResponse(StreamedResponse):
                             ),
                         )
                     elif isinstance(current_block, BetaFallbackBlock):
-                        pass
+                        yield self._parts_manager.handle_part(
+                            vendor_part_id=event.index,
+                            part=map_fallback_block(current_block, self.provider_name),
+                        )
 
                 elif isinstance(event, BetaRawContentBlockDeltaEvent):
                     if event.index in ignored_server_tool_use_indices:

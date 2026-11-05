@@ -20,6 +20,7 @@ from .._utils import (
 from ..messages import (
     CachePoint,
     CompactionPart,
+    FallbackPart,
     FilePart,
     FinishReason,
     InstructionBaselinePart,
@@ -378,7 +379,7 @@ class CohereModel(Model[AsyncClientV2]):
                     elif isinstance(item, ToolCallPart):
                         tool_calls.append(self._map_tool_call(item))
                     elif isinstance(
-                        item, NativeToolCallPart | NativeToolReturnPart | FilePart | CompactionPart
+                        item, NativeToolCallPart | NativeToolReturnPart | FilePart | CompactionPart | FallbackPart
                     ):  # pragma: no cover
                         pass
                     elif isinstance(item, SpeechPart):  # pragma: no cover

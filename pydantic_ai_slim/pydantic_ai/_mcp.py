@@ -211,6 +211,7 @@ def _map_response_history(
                 messages.FilePart,
                 messages.SpeechPart,
                 messages.CompactionPart,
+                messages.FallbackPart,
             ),
         ):
             raise exceptions.UnexpectedModelBehavior(

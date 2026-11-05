@@ -3812,6 +3812,80 @@ class CompactionPart:
 
 
 @dataclass(repr=False)
+class FallbackPart:
+    """A part representing a server-side model fallback event.
+
+    Server-side fallback blocks indicate that the provider switched to a fallback model.
+    These parts are preserved in message history and round-tripped in subsequent requests
+    to maintain conversation turn structure.
+    """
+
+    to: dict[str, Any] | str | None = None
+    """The model or destination info that was fallen back to."""
+
+    _: KW_ONLY
+
+    from_: Annotated[
+        dict[str, Any] | str | None,
+        pydantic.Field(
+            alias='from',
+            validation_alias=pydantic.AliasChoices('from_', 'from'),
+            serialization_alias='from',
+            default=None,
+        ),
+    ] = None
+    """The model or origin info that triggered the fallback."""
+
+    trigger: dict[str, Any] | None = None
+    """The trigger or reason for the fallback."""
+
+    id: str | None = None
+    """The identifier of the fallback part, if any."""
+
+    provider_name: str | None = None
+    """The name of the provider that generated the fallback."""
+
+    provider_details: dict[str, Any] | None = None
+    """Additional data returned by the provider that can't be mapped to standard fields."""
+
+    metadata: dict[str, Any] | None = None
+    """Additional data that can be accessed programmatically by the application but is not sent to the model."""
+
+    part_kind: Literal['fallback'] = 'fallback'
+    """Part type identifier, this is available on all parts as a discriminator."""
+
+    def __init__(
+        self,
+        to: dict[str, Any] | str | None = None,
+        *,
+        from_: dict[str, Any] | str | None = None,
+        trigger: dict[str, Any] | None = None,
+        id: str | None = None,
+        provider_name: str | None = None,
+        provider_details: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        part_kind: Literal['fallback'] = 'fallback',
+        **extra: Any,
+    ):
+        if 'from' in extra:
+            from_ = extra.pop('from')
+        self.to = to
+        self.from_ = from_
+        self.trigger = trigger
+        self.id = id
+        self.provider_name = provider_name
+        self.provider_details = provider_details
+        self.metadata = metadata
+        self.part_kind = part_kind
+
+    def has_content(self) -> bool:
+        """Return `True` if the fallback part has content."""
+        return False
+
+    __repr__ = _utils.dataclasses_no_defaults_repr
+
+
+@dataclass(repr=False)
 class FilePart:
     """A file response from a model."""
 
@@ -4512,7 +4586,8 @@ ModelResponsePart = Annotated[
     | Annotated[ThinkingPart, pydantic.Tag('thinking')]
     | Annotated[CompactionPart, pydantic.Tag('compaction')]
     | Annotated[FilePart, pydantic.Tag('file')]
-    | Annotated[SpeechPart, pydantic.Tag('speech')],
+    | Annotated[SpeechPart, pydantic.Tag('speech')]
+    | Annotated[FallbackPart, pydantic.Tag('fallback')],
     pydantic.Discriminator(_model_response_part_discriminator),
 ]
 """A message part returned by a model."""

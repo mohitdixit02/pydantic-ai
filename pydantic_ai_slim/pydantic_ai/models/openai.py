@@ -74,6 +74,7 @@ from ..messages import (
     CompactionPart,
     DocumentCitationSource,
     DocumentUrl,
+    FallbackPart,
     FilePart,
     FinishReason,
     ImageUrl,
@@ -2241,7 +2242,7 @@ class OpenAIChatModel(Model[AsyncOpenAI]):
                 elif isinstance(item, FilePart):  # pragma: no cover
                     self._map_response_file_part(item)
                 # Reached from Harness tests that switch to Chat after another provider's compaction.
-                elif isinstance(item, CompactionPart):  # pragma: lax no cover
+                elif isinstance(item, CompactionPart | FallbackPart):  # pragma: lax no cover
                     # Provider-produced compaction parts are not sent back to the Chat Completions API.
                     pass
                 elif isinstance(item, SpeechPart):  # pragma: no cover
@@ -5785,7 +5786,7 @@ class OpenAIResponsesModel(Model[AsyncOpenAI]):
                             elif item.content:
                                 # An empty wrapper in the user turn would tell the model the assistant thought nothing.
                                 carried_thinkings.append(thinking_text)
-                    elif isinstance(item, CompactionPart):
+                    elif isinstance(item, CompactionPart | FallbackPart):
                         # The same predicate `_trim_before_compaction` drops history before a compaction part by.
                         if (
                             self.accepts_stateless_artifacts(message, item)

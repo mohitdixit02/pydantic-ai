@@ -28,6 +28,7 @@ from ..messages import (
     BinaryContent,
     CachePoint,
     CompactionPart,
+    FallbackPart,
     FilePart,
     ImageUrl,
     InstructionBaselinePart,
@@ -2336,7 +2337,7 @@ def _request_entry(part: ModelRequestPart, images: list[BinaryContent | ImageUrl
         return _request_entry(_translate_legacy_retry_part(part), images)
     elif isinstance(part, (InstructionBaselinePart, InstructionDeltaPart)):  # pragma: no cover
         raise _unprojected_instruction_delta_error()
-    elif isinstance(part, CompactionPart):
+    elif isinstance(part, CompactionPart | FallbackPart):
         # A summary standing in for earlier turns: the same entry a response-side summary gets.
         return {'summary': part.content or ''}
     elif isinstance(part, _UnpreparedPart):  # pragma: no cover
@@ -2364,7 +2365,7 @@ def _response_entries(message: ModelResponse, images: list[BinaryContent | Image
             entries.append({'tool_call': {'name': part.tool_name, 'args': part.args_as_dict()}})
         elif isinstance(part, NativeToolReturnPart):
             entries.append(_tool_return_entry(part, images))
-        elif isinstance(part, CompactionPart):
+        elif isinstance(part, CompactionPart | FallbackPart):
             if part.content:
                 entries.append({'summary': part.content})
         elif isinstance(part, FilePart):

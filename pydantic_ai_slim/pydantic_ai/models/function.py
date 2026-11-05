@@ -16,6 +16,7 @@ from .._utils import PeekableAsyncStream
 from ..messages import (
     BinaryContent,
     CompactionPart,
+    FallbackPart,
     FilePart,
     InstructionBaselinePart,
     InstructionDeltaPart,
@@ -480,7 +481,7 @@ def _estimate_usage(  # noqa: C901
                     response_tokens += _estimate_string_tokens(part.model_response_str())
                 elif isinstance(part, FilePart):
                     response_tokens += _estimate_string_tokens([part.content])
-                elif isinstance(part, CompactionPart):
+                elif isinstance(part, CompactionPart | FallbackPart):
                     # A provider's own compaction item is opaque state, not text the model reads.
                     pass
                 elif isinstance(part, SpeechPart):

@@ -79,6 +79,7 @@ from pydantic_ai.messages import (
     CachePoint,
     CapabilityLoadDeltaPart,
     CompactionPart,
+    FallbackPart,
     FileUrl,
     LoadCapabilityCallPart,
     LoadCapabilityReturnPart,
@@ -3992,3 +3993,22 @@ async def test_agent_run_rejects_non_sequence_user_prompt():
     agent = Agent(TestModel())
     with pytest.raises(ValueError, match='must be a `str` or a sequence of `UserContent` items, got `dict`'):
         await agent.run(cast(Any, {'name': 'John'}))
+
+
+def test_fallback_part_serialization_roundtrip():
+    part = FallbackPart(
+        to={'model': 'claude-haiku-4-5'},
+        from_={'model': 'claude-fable-5-1'},
+        trigger={'type': 'refusal', 'category': 'cyber'},
+        provider_name='anthropic',
+    )
+    assert not part.has_content()
+    messages: list[ModelMessage] = [ModelResponse(parts=[TextPart('hello'), part, TextPart('world')])]
+    serialized = ModelMessagesTypeAdapter.dump_json(messages)
+    loaded = ModelMessagesTypeAdapter.validate_json(serialized)
+    assert loaded == messages
+    loaded_part = loaded[0].parts[1]
+    assert isinstance(loaded_part, FallbackPart)
+    assert loaded_part.to == {'model': 'claude-haiku-4-5'}
+    assert loaded_part.from_ == {'model': 'claude-fable-5-1'}
+    assert loaded_part.trigger == {'type': 'refusal', 'category': 'cyber'}
